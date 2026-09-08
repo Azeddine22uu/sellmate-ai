@@ -270,63 +270,52 @@ function AssistantPage() {
       || (!message.content.includes(instructionText) && !message.content.startsWith('I can help with product availability, pricing, and delivery.'))
     )));
   }, [settings.aiInstructions, setMessages]);
-  const normalizeQuestion = (value: string) => value
-    .toLocaleLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
-  const productDescription = (product: Product, includeStock = true) => {
-    const availability = product.stock > 0
-      ? includeStock ? `There ${product.stock === 1 ? 'is' : 'are'} ${product.stock} in stock` : 'It is available'
-      : 'It is currently out of stock';
-    return `${product.name} costs ${formatMoney(product.price, settings.currency)}. ${availability}.`;
+  const send = async (text = input) => {
+    if (!text.trim() || sending) return;
+    const clean = text.trim();
+    const history = messages.slice(-12).map(message => ({
+      role: message.role,
+      content: message.content,
+    }));
+    const userMessage = { id: makeId('m'), role: 'user' as const, content: clean, createdAt: new Date().toISOString() };
+    setInput('');
+    setSending(true);
+    setMessages(current => [...current, userMessage]);
+
+    try {
+      const response = await fetch('/api/assistant/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: clean,
+          products,
+          settings,
+          history,
+        }),
+      });
+      const data = await response.json() as { reply?: string; message?: string };
+      if (!response.ok || !data.reply) {
+        throw new Error(data.message || 'The assistant could not answer right now.');
+      }
+      setMessages(current => [...current, {
+        id: makeId('m'),
+        role: 'assistant',
+        content: data.reply!,
+        createdAt: new Date().toISOString(),
+      }]);
+    } catch (error) {
+      setMessages(current => [...current, {
+        id: makeId('m'),
+        role: 'assistant',
+        content: error instanceof Error
+          ? error.message
+          : 'The assistant could not answer right now. Please try again.',
+        createdAt: new Date().toISOString(),
+      }]);
+    } finally {
+      setSending(false);
+    }
   };
-  const reply = (question: string) => {
-    const lower = normalizeQuestion(question);
-    const productMatches = products
-      .map(product => {
-        const productName = normalizeQuestion(product.name);
-        const nameTokens = productName.split(/\s+/).filter(token => token.length >= 4);
-        const matchedName = lower.includes(productName);
-        const matchedTokenCount = nameTokens.filter(token => lower.includes(token)).length;
-        return { product, score: matchedName ? 100 : matchedTokenCount * 10 };
-      })
-      .filter(match => match.score > 0)
-      .sort((a, b) => b.score - a.score);
-    const matched = productMatches[0]?.product;
-    const priceQuestion = /\b(price|cost|how much|worth|prix|tarif|costs?)\b/.test(lower);
-    const availabilityQuestion = /\b(stock|available|availability|inventory|left|have)\b/.test(lower);
-    const catalogQuestion = /\b(products?|catalog|sell|offer|items?)\b/.test(lower);
-    const budgetMatch = lower.match(/\b(?:under|below|less than|up to|maximum|max|moins de|a moins de)\s*(\d+(?:[.,]\d+)?)\b/);
-    const budget = budgetMatch ? Number(budgetMatch[1].replace(',', '.')) : null;
-
-    if (/\b(deliver|delivery|shipping|ship|livraison|exped)\b/.test(lower)) {
-      return settings.deliveryInformation;
-    }
-
-    if (budget !== null) {
-      const affordable = products.filter(product => product.price <= budget);
-      if (!affordable.length) return `I could not find a product at or below ${formatMoney(budget, settings.currency)}.`;
-      return `Here are the products at or below ${formatMoney(budget, settings.currency)}: ${affordable.map(product => productDescription(product, false)).join(' ')}`;
-    }
-
-    if (matched && (priceQuestion || availabilityQuestion || lower.includes(matched.name.toLocaleLowerCase()))) {
-      return productDescription(matched);
-    }
-
-    if (priceQuestion || availabilityQuestion || catalogQuestion) {
-      if (!products.length) return 'There are no products in the catalog yet. Add a product to give customers a price and availability.';
-      return `Here is the current catalog: ${products.map(product => productDescription(product)).join(' ')}`;
-    }
-
-    if (/\b(reply|customer|message|respond)\b/.test(lower)) {
-      const lowStockProduct = products.find(product => product.stock > 0 && product.stock <= 5) || matched || products[0];
-      if (!lowStockProduct) return 'There are no products in the catalog yet, so I cannot draft a product reply.';
-      return `You can say: “Thanks for reaching out. ${lowStockProduct.name} is available for ${formatMoney(lowStockProduct.price, settings.currency)}. We currently have ${lowStockProduct.stock} in stock. ${settings.deliveryInformation}”`;
-    }
-
-    return 'I can answer questions about product prices, availability, the catalog, and delivery. Try asking “What is the price of the Atlas Linen Overshirt?”';
-  };
-  const send = (text = input) => { if (!text.trim() || sending) return; const clean = text.trim(); setInput(''); setSending(true); setMessages(current => [...current, { id: makeId('m'), role: 'user', content: clean, createdAt: new Date().toISOString() }]); setTimeout(() => { setMessages(current => [...current, { id: makeId('m'), role: 'assistant', content: reply(clean), createdAt: new Date().toISOString() }]); setSending(false); }, 500); };
   return <><PageIntro eyebrow="Your co-pilot" title="AI Assistant" description="Ask about your catalog, or get a ready-to-send customer reply grounded in your store." action={<div className="flex items-center gap-2 rounded-xl border border-[#c9e1d4] bg-[#eef8f1] px-3 py-2 text-xs font-bold text-[#3c745b]"><span className="size-2 rounded-full bg-[#5da27e]" />Local intelligence</div>} /><div className="grid gap-6 xl:grid-cols-[1fr_300px]"><section className="flex min-h-[590px] flex-col overflow-hidden rounded-2xl border border-border bg-card"><div className="flex items-center gap-3 border-b border-border px-5 py-4"><div className="grid size-9 place-items-center rounded-xl bg-[#f7df9d] text-[#966c1a]"><Sparkles className="size-4" /></div><div><p className="text-sm font-bold">SellMate co-pilot</p><p className="text-[11px] text-muted-foreground">Uses your catalog and store settings</p></div><span className="ml-auto flex items-center gap-1.5 text-[10px] font-bold text-[#4d8a70]"><span className="size-1.5 rounded-full bg-[#62a985]" />Ready</span></div><div className="flex-1 space-y-4 overflow-y-auto p-5 sm:p-7">{messages.map(message => <div key={message.id} className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : ''}`} data-testid={`chat-message-${message.id}`}><div className={`max-w-[86%] rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === 'user' ? 'rounded-br-md bg-sidebar text-sidebar-foreground' : 'rounded-bl-md bg-muted text-foreground'}`}><p>{message.content}</p><p className={`mt-1.5 text-[10px] ${message.role === 'user' ? 'text-sidebar-foreground/45' : 'text-muted-foreground'}`}>{formatDate(message.createdAt)}</p></div></div>)}{sending && <div className="flex gap-3"><div className="rounded-2xl rounded-bl-md bg-muted px-4 py-3"><span className="flex gap-1"><i className="size-1.5 animate-pulse rounded-full bg-muted-foreground" /><i className="size-1.5 animate-pulse rounded-full bg-muted-foreground [animation-delay:.15s]" /><i className="size-1.5 animate-pulse rounded-full bg-muted-foreground [animation-delay:.3s]" /></span></div></div>}</div><div className="border-t border-border p-4"><div className="mb-3 flex gap-2 overflow-x-auto">{suggestions.map(suggestion => <button key={suggestion} onClick={() => send(suggestion)} className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[10px] font-semibold text-muted-foreground hover:bg-muted hover:text-foreground" data-testid={`button-suggestion-${suggestion.slice(0, 8).replaceAll(' ', '-').toLowerCase()}`}>{suggestion}</button>)}</div><form onSubmit={event => { event.preventDefault(); send(); }} className="flex items-center gap-2 rounded-xl border border-input bg-background p-1.5 pl-3 focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/10"><input value={input} onChange={event => setInput(event.target.value)} placeholder="Ask about your store..." className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/65" data-testid="input-assistant-message" /><button type="submit" disabled={!input.trim() || sending} className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground disabled:opacity-40" aria-label="Send message" data-testid="button-send-message"><Send className="size-4" /></button></form></div></section><aside className="space-y-4"><div className="rounded-2xl border border-border bg-card p-5"><div className="flex items-center gap-2"><SettingsIcon className="size-4 text-accent" /><h2 className="text-sm font-bold">Your context</h2></div><div className="mt-5 space-y-3 text-xs"><ContextRow label="Products" value={`${products.length} in catalog`} /><ContextRow label="Currency" value={settings.currency} /><ContextRow label="Delivery" value={settings.deliveryInformation} /></div><Link href="/settings" data-testid="link-assistant-settings" className="mt-5 flex items-center gap-1 text-xs font-bold text-accent hover:underline">Tune instructions <ArrowRight className="size-3.5" /></Link></div><div className="rounded-2xl bg-[#eaf1e9] p-5"><p className="text-[11px] font-bold uppercase tracking-[.14em] text-[#568073]">Good to know</p><p className="mt-3 text-sm leading-6 text-[#4d6d6b]">The assistant only uses the products and settings in this workspace. Keep them current for more useful replies.</p></div></aside></div></>;
 }
 function ContextRow({ label, value }: { label: string; value: string }) { return <div><p className="font-bold text-foreground">{label}</p><p className="mt-1 leading-5 text-muted-foreground">{value}</p></div>; }
