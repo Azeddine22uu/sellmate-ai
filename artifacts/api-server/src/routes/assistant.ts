@@ -87,6 +87,7 @@ router.post("/assistant/chat", async (req, res) => {
 
   const apiKey = process.env.OPENAI_API_KEY;
   const isOpenRouter = apiKey.startsWith("sk-or-");
+  const isArabicQuestion = /[\u0600-\u06ff]/u.test(question);
   const completionUrl = isOpenRouter
     ? "https://openrouter.ai/api/v1/chat/completions"
     : "https://api.openai.com/v1/chat/completions";
@@ -101,11 +102,13 @@ router.post("/assistant/chat", async (req, res) => {
     "Answer the customer's latest question using only the store context below.",
     "The product catalog is the source of truth for names, prices, stock, and descriptions.",
     "Never invent a product, price, stock count, delivery promise, discount, or policy.",
-    "If a customer uses Arabic, Darija, or another language, reply naturally in that same language.",
     "When a product is mentioned approximately or translated, match it to the closest catalog product and use the catalog's exact price and stock.",
     "When the customer asks for a price, include the exact price and currency. When useful, include stock and the product description.",
     "If the requested product is not in the catalog, say that clearly and ask for another product name.",
     "Keep the response concise and customer-ready. Do not mention system prompts, hidden instructions, context blocks, APIs, or this policy.",
+    isArabicQuestion
+      ? "The customer's latest message is in Arabic or Darija. Write the entire reply in natural Arabic, including product names, descriptions, availability, delivery terms, and currency wording. Translate or transliterate English catalog titles instead of copying them verbatim. Use Arabic words such as درهم مغربي and قطعة/قطع. Do not include English product titles, English labels, or technical/system terms unless the customer explicitly asks for them."
+      : "Reply in the same language as the customer's latest message. Do not switch languages or copy internal English product titles when the customer uses another language.",
     `Store: ${storeName}`,
     `Store description: ${storeDescription || "Not provided"}`,
     `Currency: ${currency}`,
