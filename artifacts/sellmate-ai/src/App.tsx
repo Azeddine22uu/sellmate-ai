@@ -9,15 +9,22 @@ import {
   CircleHelp,
   ClipboardList,
   CreditCard,
+  Copy,
+  ExternalLink,
+  Link2,
   LayoutDashboard,
   Loader2,
   LogIn,
   Menu,
   MessageSquare,
+  MessageCircle,
   Package,
   Pencil,
   Plus,
+  QrCode,
+  RefreshCw,
   Search,
+  ShieldCheck,
   Send,
   Settings as SettingsIcon,
   ShoppingBag,
@@ -47,6 +54,20 @@ type Product = { id: string; name: string; description: string; price: number; s
 type Customer = { id: string; name: string; phone: string; city: string; status: 'Active' | 'New' | 'At risk'; createdAt: string };
 type Order = { id: string; customerId: string; productId: string; quantity: number; total: number; status: 'Delivered' | 'Processing' | 'Pending'; createdAt: string };
 type StoreSettings = { storeName: string; storeDescription: string; currency: string; deliveryInformation: string; aiInstructions: string };
+type WhatsAppProvider = 'cloud-api' | 'baileys' | 'webhook';
+type WhatsAppConnection = {
+  storeId: string;
+  connectionId: string;
+  provider: WhatsAppProvider;
+  displayName: string;
+  phoneNumber: string | null;
+  status: 'connected' | 'pending' | 'connecting' | 'qr' | 'disconnected' | 'error';
+  webhookToken: string;
+  webhookPath: string;
+  updatedAt?: string;
+  qrDataUrl?: string;
+  error?: string;
+};
 type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string; createdAt: string };
 
 const now = new Date().toISOString();
@@ -75,6 +96,7 @@ const seedSettings: StoreSettings = {
   deliveryInformation: 'Delivery across Morocco in 2–4 working days. Free delivery over 700 MAD.',
   aiInstructions: 'Be warm, concise, and confident. Mention availability and delivery details when useful.',
 };
+const seedWhatsApp: WhatsAppConnection | null = null;
 const seedMessages: ChatMessage[] = [
   { id: 'm1', role: 'assistant', content: 'Hello. I’m ready to help you turn product questions into confident replies. Ask me about a product, delivery, or a customer scenario.', createdAt: now },
 ];
@@ -339,13 +361,247 @@ function AssistantPage() {
 }
 function ContextRow({ label, value }: { label: string; value: string }) { return <div><p className="font-bold text-foreground">{label}</p><p className="mt-1 leading-5 text-muted-foreground">{value}</p></div>; }
 
+function LegacySettingsPage() {
+  const [settings, setSettings] = usePersisted('settings', seedSettings);
+  const [form, setForm] = useState(settings);
+  const [storeId] = usePersisted('store-id', makeId('store'));
+  const [whatsapp, setWhatsapp] = usePersisted<WhatsAppConnection | null>('whatsapp', seedWhatsApp);
+  const [saved, setSaved] = useState(false);
+  const [whatsappProvider, setWhatsappProvider] = useState<WhatsAppProvider>('baileys');
+  const [whatsappPhone, setWhatsappPhone] = useState('');
+  const [whatsappBusy, setWhatsappBusy] = useState(false);
+  const [whatsappNotice, setWhatsappNotice] = useState('');
+  const update = (key: keyof StoreSettings, value: string) => setForm(current => ({ ...current, [key]: value }));
+  useEffect(() => {
+    let active = true;
+    void fetch(`/api/whatsapp/connection/${storeId}`)
+      .then(response => response.ok ? response.json() as Promise<{ connection: WhatsAppConnection }> : null)
+      .then(data => { if (active && data?.connection) setWhatsapp(data.connection); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [storeId, setWhatsapp]);
+  useEffect(() => {
+    if (whatsapp?.provider !== 'baileys') return;
+    let active = true;
+    const poll = () => {
+      void fetch(`/api/whatsapp/baileys/status/${storeId}`)
+        .then(response => response.ok ? response.json() as Promise<{ connection: WhatsAppConnection; session: Partial<WhatsAppConnection> }> : null)
+        .then(data => {
+          if (active && data) setWhatsapp({ ...data.connection, ...data.session });
+        })
+        .catch(() => undefined);
+    };
+    poll();
+    const interval = window.setInterval(poll, 2200);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [storeId, whatsapp?.provider, setWhatsapp]);
+  const syncWhatsApp = async (connection = whatsapp) => {
+    if (!connection) return;
+    const response = await fetch('/api/whatsapp/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storeId, context: { products: readStore('products', seedProducts), settings: form } }),
+    });
+    if (!response.ok) throw new Error('sync_failed');
+  };
+  const connectWhatsApp = async () => {
+    setWhatsappBusy(true);
+    setWhatsappNotice('');
+    try {
+      const response = await fetch('/api/whatsapp/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId,
+          provider: whatsappProvider,
+          displayName: form.storeName,
+          phoneNumber: whatsappPhone,
+          context: { products: readStore('products', seedProducts), settings: form },
+        }),
+      });
+      const data = await response.json() as { connection?: WhatsAppConnection; message?: string };
+      if (!response.ok || !data.connection) throw new Error(data.message || 'connect_failed');
+      setWhatsapp(data.connection);
+      if (whatsappProvider === 'baileys') {
+        void fetch('/api/whatsapp/baileys/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ storeId }),
+        });
+        setWhatsappNotice('WhatsApp Web is starting. Scan the QR code with your phone.');
+      } else {
+        setWhatsappNotice(data.connection.status === 'connected' ? 'WhatsApp is connected and ready.' : 'Connection saved. Finish provider authorization to deliver live messages.');
+      }
+    } catch {
+      setWhatsappNotice('Could not save the WhatsApp connection. Please try again.');
+    } finally {
+      setWhatsappBusy(false);
+    }
+  };
+  const disconnectWhatsApp = async () => {
+    if (!whatsapp) return;
+    setWhatsappBusy(true);
+    try {
+      if (whatsapp.provider === 'baileys') {
+        await fetch('/api/whatsapp/baileys/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ storeId }) });
+      }
+      await fetch('/api/whatsapp/disconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ storeId }) });
+      setWhatsapp(null);
+      setWhatsappNotice('WhatsApp was disconnected.');
+    } catch {
+      setWhatsappNotice('Could not disconnect WhatsApp.');
+    } finally {
+      setWhatsappBusy(false);
+    }
+  };
+  const copyText = async (value: string) => {
+    await navigator.clipboard?.writeText(value);
+    setWhatsappNotice('Copied to clipboard.');
+  };
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSettings(form);
+    if (whatsapp) {
+      try {
+        await syncWhatsApp();
+        setWhatsappNotice('Settings saved and WhatsApp context synced.');
+      } catch {
+        setWhatsappNotice('Settings saved, but WhatsApp context could not sync.');
+      }
+    }
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2200);
+  };
+  const webhookUrl = whatsapp ? `${window.location.origin}${whatsapp.webhookPath}` : '';
+  return <><PageIntro eyebrow="Workspace" title="Settings" description="Shape the context SellMate uses to help you and your customers." /><form onSubmit={submit} className="grid gap-6 lg:grid-cols-[1fr_300px]"><section className="space-y-6"><div className="rounded-2xl border border-border bg-card p-5 sm:p-7"><div className="flex items-center gap-3 border-b border-border pb-5"><div className="grid size-10 place-items-center rounded-xl bg-[#eaf1e9] text-accent"><Store className="size-5" /></div><div><h2 className="text-sm font-bold">Store profile</h2><p className="mt-1 text-xs text-muted-foreground">The basics customers should feel in every reply.</p></div></div><div className="mt-6 space-y-5"><Field label="Store name" value={form.storeName} onChange={value => update('storeName', value)} placeholder="Your store name" required testId="input-settings-store-name" /><Field label="Store description" value={form.storeDescription} onChange={value => update('storeDescription', value)} placeholder="A short description" multiline testId="input-settings-description" /><div className="grid gap-5 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-bold">Currency</span><select value={form.currency} onChange={e => update('currency', e.target.value)} className="h-11 w-full rounded-xl border border-input bg-card px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" data-testid="select-settings-currency"><option value="MAD">MAD · Moroccan Dirham</option><option value="EUR">EUR · Euro</option><option value="USD">USD · US Dollar</option></select></label><Field label="Delivery information" value={form.deliveryInformation} onChange={value => update('deliveryInformation', value)} placeholder="How delivery works" testId="input-settings-delivery" /></div></div></div><section className="rounded-2xl border border-border bg-card p-5 sm:p-7"><div className="flex items-start justify-between gap-4 border-b border-border pb-5"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-[#dff3eb] text-[#23725c]"><MessageCircle className="size-5" /></div><div><h2 className="text-sm font-bold">WhatsApp automation</h2><p className="mt-1 text-xs text-muted-foreground">Let SellMate answer customer messages with your live catalog.</p></div></div><span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${whatsapp?.status === 'connected' ? 'bg-[#e4f4ea] text-[#347158]' : whatsapp ? 'bg-[#fff3d8] text-[#946b20]' : 'bg-muted text-muted-foreground'}`}>{whatsapp?.status === 'connected' ? 'Connected' : whatsapp ? 'Pending' : 'Not connected'}</span></div>{!whatsapp ? <div className="mt-6 space-y-5"><div className="grid gap-4 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-bold">Connection method</span><select value={whatsappProvider} onChange={event => setWhatsappProvider(event.target.value as WhatsAppProvider)} className="h-11 w-full rounded-xl border border-input bg-card px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" data-testid="select-whatsapp-provider"><option value="cloud-api">WhatsApp Business API</option><option value="baileys">QR code / Baileys bridge</option><option value="webhook">Custom webhook</option></select></label><Field label="WhatsApp number (optional)" value={whatsappPhone} onChange={setWhatsappPhone} placeholder="+212 6 00 00 00 00" testId="input-whatsapp-phone" /></div><div className="rounded-xl border border-[#cce7df] bg-[#f2fbf7] p-4 text-xs leading-5 text-[#3f7165]"><div className="flex items-start gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0" /><p><strong>Safe by default.</strong> SellMate keeps provider credentials server-side. This setup creates a verified webhook and syncs your catalog; live delivery requires WhatsApp Business authorization.</p></div></div><Button type="button" onClick={connectWhatsApp} disabled={whatsappBusy} testId="button-connect-whatsapp">{whatsappBusy ? <Loader2 className="size-4 animate-spin" /> : <Link2 className="size-4" />}Connect WhatsApp</Button></div> : <div className="mt-6 space-y-5"><div className="grid gap-3 sm:grid-cols-2"><div className="rounded-xl bg-muted/50 p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Method</p><p className="mt-2 text-sm font-bold">{whatsapp.provider === 'cloud-api' ? 'WhatsApp Business API' : whatsapp.provider === 'baileys' ? 'QR code / Baileys bridge' : 'Custom webhook'}</p></div><div className="rounded-xl bg-muted/50 p-4"><p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Number</p><p className="mt-2 text-sm font-bold">{whatsapp.phoneNumber || 'Not provided'}</p></div></div><div><div className="mb-2 flex items-center justify-between gap-3"><p className="text-xs font-bold">Webhook URL</p><button type="button" onClick={() => void copyText(webhookUrl)} className="inline-flex items-center gap-1 text-[11px] font-bold text-accent hover:underline"><Copy className="size-3" />Copy</button></div><div className="flex items-center gap-2 rounded-xl border border-input bg-background p-3"><code className="min-w-0 flex-1 break-all text-[11px] text-muted-foreground">{webhookUrl}</code><ExternalLink className="size-4 shrink-0 text-muted-foreground" /></div></div><div><div className="mb-2 flex items-center justify-between gap-3"><p className="text-xs font-bold">Verify token</p><button type="button" onClick={() => void copyText(whatsapp.webhookToken)} className="inline-flex items-center gap-1 text-[11px] font-bold text-accent hover:underline"><Copy className="size-3" />Copy</button></div><code className="block rounded-xl border border-input bg-background p-3 text-[11px] text-muted-foreground">{whatsapp.webhookToken}</code></div><div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => void syncWhatsApp()} disabled={whatsappBusy}><Check className="size-4" />Sync catalog</Button><Button type="button" variant="ghost" onClick={() => void disconnectWhatsApp()} disabled={whatsappBusy}>Disconnect</Button><a href="https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/components" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-3 py-2 text-xs font-bold text-accent hover:underline">Setup guide <ExternalLink className="size-3" /></a></div></div>}{whatsappNotice && <p className="mt-4 rounded-xl bg-muted px-3.5 py-3 text-xs font-semibold text-muted-foreground" role="status">{whatsappNotice}</p>}</section></section><div className="space-y-6"><section className="rounded-2xl border border-border bg-card p-5 sm:p-6"><div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-xl bg-[#f7df9d] text-[#966c1a]"><Bot className="size-4" /></div><div><h2 className="text-sm font-bold">AI instructions</h2><p className="mt-1 text-xs text-muted-foreground">Your tone, always nearby.</p></div></div><textarea value={form.aiInstructions} onChange={e => update('aiInstructions', e.target.value)} rows={7} className="mt-5 w-full resize-none rounded-xl border border-input bg-background p-3.5 text-sm leading-6 outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" placeholder="Tell the assistant how to sound..." data-testid="textarea-settings-ai" /></section><Button type="submit" className="w-full" testId="button-save-settings">{saved ? <><Check className="size-4" />Saved locally</> : <><Check className="size-4" />Save settings</>}</Button><p className="text-center text-[11px] leading-5 text-muted-foreground">Demo mode stores changes in your browser. Supabase can be connected later without changing this workspace.</p></div></form></>;
+}
+
 function SettingsPage() {
   const [settings, setSettings] = usePersisted('settings', seedSettings);
   const [form, setForm] = useState(settings);
+  const [storeId] = usePersisted('store-id', makeId('store'));
+  const [whatsapp, setWhatsapp] = usePersisted<WhatsAppConnection | null>('whatsapp', seedWhatsApp);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
   const [saved, setSaved] = useState(false);
-  const update = (key: keyof StoreSettings, value: string) => setForm(current => ({ ...current, [key]: value }));
-  const submit = (event: FormEvent) => { event.preventDefault(); setSettings(form); setSaved(true); setTimeout(() => setSaved(false), 2200); };
-  return <><PageIntro eyebrow="Workspace" title="Settings" description="Shape the context SellMate uses to help you and your customers." /><form onSubmit={submit} className="grid gap-6 lg:grid-cols-[1fr_300px]"><section className="rounded-2xl border border-border bg-card p-5 sm:p-7"><div className="flex items-center gap-3 border-b border-border pb-5"><div className="grid size-10 place-items-center rounded-xl bg-[#eaf1e9] text-accent"><Store className="size-5" /></div><div><h2 className="text-sm font-bold">Store profile</h2><p className="mt-1 text-xs text-muted-foreground">The basics customers should feel in every reply.</p></div></div><div className="mt-6 space-y-5"><Field label="Store name" value={form.storeName} onChange={value => update('storeName', value)} placeholder="Your store name" required testId="input-settings-store-name" /><Field label="Store description" value={form.storeDescription} onChange={value => update('storeDescription', value)} placeholder="A short description" multiline testId="input-settings-description" /><div className="grid gap-5 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-bold">Currency</span><select value={form.currency} onChange={e => update('currency', e.target.value)} className="h-11 w-full rounded-xl border border-input bg-card px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" data-testid="select-settings-currency"><option value="MAD">MAD · Moroccan Dirham</option><option value="EUR">EUR · Euro</option><option value="USD">USD · US Dollar</option></select></label><Field label="Delivery information" value={form.deliveryInformation} onChange={value => update('deliveryInformation', value)} placeholder="How delivery works" testId="input-settings-delivery" /></div></div></section><div className="space-y-6"><section className="rounded-2xl border border-border bg-card p-5 sm:p-6"><div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-xl bg-[#f7df9d] text-[#966c1a]"><Bot className="size-4" /></div><div><h2 className="text-sm font-bold">AI instructions</h2><p className="mt-1 text-xs text-muted-foreground">Your tone, always nearby.</p></div></div><textarea value={form.aiInstructions} onChange={e => update('aiInstructions', e.target.value)} rows={7} className="mt-5 w-full resize-none rounded-xl border border-input bg-background p-3.5 text-sm leading-6 outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" placeholder="Tell the assistant how to sound..." data-testid="textarea-settings-ai" /></section><Button type="submit" className="w-full" testId="button-save-settings">{saved ? <><Check className="size-4" />Saved locally</> : <><Check className="size-4" />Save settings</>}</Button><p className="text-center text-[11px] leading-5 text-muted-foreground">Demo mode stores changes in your browser. Supabase can be connected later without changing this workspace.</p></div></form></>;
+
+  const context = { products: readStore('products', seedProducts), settings: form };
+  const refreshWhatsApp = async () => {
+    const response = await fetch(`/api/whatsapp/baileys/status/${storeId}`);
+    if (!response.ok) return;
+    const data = await response.json() as { connection: WhatsAppConnection; session: Partial<WhatsAppConnection> };
+    setWhatsapp({ ...data.connection, ...data.session });
+  };
+
+  useEffect(() => {
+    let active = true;
+    void fetch(`/api/whatsapp/connection/${storeId}`)
+      .then(response => response.ok ? response.json() as Promise<{ connection: WhatsAppConnection }> : null)
+      .then(data => {
+        if (active && data?.connection) setWhatsapp(data.connection);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [storeId, setWhatsapp]);
+
+  useEffect(() => {
+    if (!whatsapp || whatsapp.provider !== 'baileys') return;
+    let active = true;
+    const poll = () => {
+      void fetch(`/api/whatsapp/baileys/status/${storeId}`)
+        .then(response => response.ok ? response.json() as Promise<{ connection: WhatsAppConnection; session: Partial<WhatsAppConnection> }> : null)
+        .then(data => {
+          if (active && data) setWhatsapp({ ...data.connection, ...data.session });
+        })
+        .catch(() => undefined);
+    };
+    poll();
+    const interval = window.setInterval(poll, 2200);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [storeId, whatsapp?.provider, setWhatsapp]);
+
+  const connect = async () => {
+    setBusy(true);
+    setNotice('');
+    try {
+      const response = await fetch('/api/whatsapp/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storeId,
+          provider: 'baileys',
+          displayName: form.storeName,
+          context,
+        }),
+      });
+      const data = await response.json() as { connection?: WhatsAppConnection; message?: string };
+      if (!response.ok || !data.connection) throw new Error(data.message || 'connect_failed');
+      setWhatsapp(data.connection);
+      await fetch('/api/whatsapp/baileys/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId }),
+      });
+      setNotice('WhatsApp Web is starting. Open WhatsApp on your phone and scan the QR code.');
+    } catch {
+      setNotice('WhatsApp Web could not start. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sync = async () => {
+    if (!whatsapp) return;
+    setBusy(true);
+    try {
+      const response = await fetch('/api/whatsapp/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId, context }),
+      });
+      if (!response.ok) throw new Error('sync_failed');
+      setNotice('Your latest catalog and AI instructions are synced.');
+    } catch {
+      setNotice('The catalog could not sync right now.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy(true);
+    try {
+      await fetch('/api/whatsapp/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storeId }),
+      });
+      setWhatsapp(null);
+      setNotice('WhatsApp Web was disconnected and its local session was removed.');
+    } catch {
+      setNotice('WhatsApp could not be disconnected.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSettings(form);
+    if (whatsapp) await sync();
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2200);
+  };
+
+  const statusLabel = whatsapp?.status === 'connected'
+    ? 'Connected'
+    : whatsapp?.status === 'qr'
+      ? 'Scan to connect'
+      : whatsapp?.status === 'error'
+        ? 'Needs attention'
+        : 'Starting';
+
+  return <><PageIntro eyebrow="Workspace" title="Settings" description="Shape the context SellMate uses to help you and your customers." /><form onSubmit={submit} className="grid gap-6 lg:grid-cols-[1fr_300px]"><section className="space-y-6"><section className="rounded-2xl border border-border bg-card p-5 sm:p-7"><div className="flex items-center gap-3 border-b border-border pb-5"><div className="grid size-10 place-items-center rounded-xl bg-[#eaf1e9] text-accent"><Store className="size-5" /></div><div><h2 className="text-sm font-bold">Store profile</h2><p className="mt-1 text-xs text-muted-foreground">The basics customers should feel in every reply.</p></div></div><div className="mt-6 space-y-5"><Field label="Store name" value={form.storeName} onChange={value => setForm(current => ({ ...current, storeName: value }))} placeholder="Your store name" required testId="input-settings-store-name" /><Field label="Store description" value={form.storeDescription} onChange={value => setForm(current => ({ ...current, storeDescription: value }))} placeholder="A short description" multiline testId="input-settings-description" /><div className="grid gap-5 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-bold">Currency</span><select value={form.currency} onChange={event => setForm(current => ({ ...current, currency: event.target.value }))} className="h-11 w-full rounded-xl border border-input bg-card px-3 text-sm outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" data-testid="select-settings-currency"><option value="MAD">MAD · Moroccan Dirham</option><option value="EUR">EUR · Euro</option><option value="USD">USD · US Dollar</option></select></label><Field label="Delivery information" value={form.deliveryInformation} onChange={value => setForm(current => ({ ...current, deliveryInformation: value }))} placeholder="How delivery works" testId="input-settings-delivery" /></div></div></section><section className="rounded-2xl border border-border bg-card p-5 sm:p-7"><div className="flex items-start justify-between gap-4 border-b border-border pb-5"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-[#dff3eb] text-[#23725c]"><MessageCircle className="size-5" /></div><div><h2 className="text-sm font-bold">Direct WhatsApp Web</h2><p className="mt-1 text-xs text-muted-foreground">Link your existing WhatsApp account by scanning a QR code.</p></div></div>{whatsapp && <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${whatsapp.status === 'connected' ? 'bg-[#e4f4ea] text-[#347158]' : whatsapp.status === 'error' ? 'bg-[#fde8e6] text-[#a34d45]' : 'bg-[#fff3d8] text-[#946b20]'}`}>{statusLabel}</span>}</div>{!whatsapp ? <div className="mt-6 space-y-5"><div className="rounded-xl border border-[#cce7df] bg-[#f2fbf7] p-4 text-xs leading-5 text-[#3f7165]"><div className="flex items-start gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0" /><p><strong>Free direct connection.</strong> SellMate runs a Baileys WhatsApp Web session on the server. Your phone stays the linked device; no Meta Business account or paid connector is required.</p></div></div><Button type="button" onClick={() => void connect()} disabled={busy} testId="button-connect-whatsapp">{busy ? <Loader2 className="size-4 animate-spin" /> : <QrCode className="size-4" />}Start WhatsApp Web</Button></div> : <div className="mt-6 space-y-5">{whatsapp.status === 'qr' && whatsapp.qrDataUrl && <div className="rounded-2xl border border-[#dce5dc] bg-[#fbfcf8] p-5 text-center"><img src={whatsapp.qrDataUrl} alt="WhatsApp Web QR code" className="mx-auto size-64 rounded-xl" /><p className="mt-4 text-sm font-bold text-foreground">Scan this code with WhatsApp</p><p className="mt-1 text-xs leading-5 text-muted-foreground">On your phone: WhatsApp → Linked devices → Link a device.</p></div>}{whatsapp.status === 'connecting' && <div className="flex items-center gap-3 rounded-xl bg-muted/50 p-4 text-sm font-semibold"><Loader2 className="size-4 animate-spin text-accent" />Waiting for WhatsApp Web…</div>}{whatsapp.status === 'connected' && <div className="flex items-start gap-3 rounded-xl border border-[#cce7df] bg-[#f2fbf7] p-4"><Check className="mt-0.5 size-4 text-[#23725c]" /><div><p className="text-sm font-bold text-[#23725c]">WhatsApp is linked</p><p className="mt-1 text-xs leading-5 text-[#3f7165]">{whatsapp.phoneNumber ? `Replies will be sent from +${whatsapp.phoneNumber}.` : 'Replies will be sent from your linked WhatsApp account.'}</p></div></div>}{whatsapp.status === 'error' && <div className="rounded-xl bg-[#fde8e6] p-4 text-xs font-semibold leading-5 text-[#a34d45]">{whatsapp.error || 'WhatsApp needs to be linked again.'}</div>}<div className="flex flex-wrap gap-2"><Button type="button" variant="secondary" onClick={() => void sync()} disabled={busy}><RefreshCw className="size-4" />Sync catalog</Button>{whatsapp.status !== 'connected' && <Button type="button" variant="secondary" onClick={() => void connect()} disabled={busy}><QrCode className="size-4" />Show new QR</Button>}<Button type="button" variant="ghost" onClick={() => void disconnect()} disabled={busy}>Disconnect</Button></div></div>}{notice && <p className="mt-4 rounded-xl bg-muted px-3.5 py-3 text-xs font-semibold text-muted-foreground" role="status">{notice}</p>}</section></section><aside className="space-y-6"><section className="rounded-2xl border border-border bg-card p-5 sm:p-6"><div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-xl bg-[#f7df9d] text-[#966c1a]"><Bot className="size-4" /></div><div><h2 className="text-sm font-bold">AI instructions</h2><p className="mt-1 text-xs text-muted-foreground">Your tone, always nearby.</p></div></div><textarea value={form.aiInstructions} onChange={event => setForm(current => ({ ...current, aiInstructions: event.target.value }))} rows={9} className="mt-5 w-full resize-none rounded-xl border border-input bg-background p-3.5 text-sm leading-6 outline-none focus:border-primary focus:ring-4 focus:ring-primary/10" placeholder="Tell the assistant how to sound..." data-testid="textarea-settings-ai" /></section><Button type="submit" className="w-full" testId="button-save-settings">{saved ? <><Check className="size-4" />Saved locally</> : <><Check className="size-4" />Save settings</>}</Button><p className="text-center text-[11px] leading-5 text-muted-foreground">Demo mode stores changes in your browser. WhatsApp runs through the server-side Baileys session.</p></aside></form></>;
 }
 
 function Router() {

@@ -35,7 +35,8 @@ SellMate AI is a responsive sales assistant for online stores to manage products
 
 - Demo mode is the default so the full MVP is usable without credentials or paid APIs.
 - Supabase is opt-in through Vite environment variables and uses per-user JSONB state with row-level security.
-- The assistant is intentionally local and catalog-grounded for the first MVP; it never calls a paid model.
+- The assistant runs through the server-side LLM route and remains catalog-grounded; credentials never reach the browser.
+- WhatsApp setup uses a self-hosted Baileys WhatsApp Web session. Connections and synced catalog context are stored in PostgreSQL, while the linked-device auth state is kept server-side.
 - Store data is seeded with a small Moroccan retail example so the dashboard is useful on first open.
 
 ## Product
@@ -46,6 +47,7 @@ SellMate AI is a responsive sales assistant for online stores to manage products
 - Searchable customers and filterable orders
 - Local AI assistant for product, pricing, stock, delivery, and reply-writing prompts
 - Store settings for identity, currency, delivery, and assistant instructions
+- WhatsApp automation settings with webhook verification, catalog sync, and provider status
 
 ## User preferences
 
@@ -56,6 +58,7 @@ SellMate AI is a responsive sales assistant for online stores to manage products
 
 - Cloud mode requires both Supabase env values and the SQL in `artifacts/sellmate-ai/supabase/schema.sql`.
 - The product is currently delivered as the workspace's React/Vite web artifact so the managed preview and build pipeline work reliably.
+- Direct WhatsApp Web requires the API server to remain running because the linked-device session and message listener live there. Disconnecting removes the stored Baileys auth state.
 
 ## Pointers
 

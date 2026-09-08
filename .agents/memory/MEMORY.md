@@ -1,0 +1,1 @@
+- [WhatsApp assistant boundary](whatsapp-architecture.md) — shared server-side assistant engine; PostgreSQL context; provider delivery only after server authorization.
