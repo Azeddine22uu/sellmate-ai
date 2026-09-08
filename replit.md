@@ -1,6 +1,6 @@
-# [Project name]
+# SellMate AI
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+SellMate AI is a responsive sales assistant for online stores to manage products, customers, orders, and catalog-grounded sales conversations.
 
 ## Run & Operate
 
@@ -10,6 +10,8 @@ _Replace the heading above with the project's name, and this line with one sente
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
 - Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/sellmate-ai run dev` — run the SellMate AI web app
+- Optional cloud mode uses `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`; without them, the app runs in browser-local demo mode.
 
 ## Stack
 
@@ -19,26 +21,41 @@ _Replace the heading above with the project's name, and this line with one sente
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
+- Frontend: React + Vite + TypeScript + Tailwind CSS
+- Optional auth/data: Supabase Auth and the `sellmate_state` JSONB table defined in `artifacts/sellmate-ai/supabase/schema.sql`
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/sellmate-ai/src/App.tsx` — SellMate AI routes, shell, pages, demo state, and local assistant
+- `artifacts/sellmate-ai/src/lib/supabase.ts` — optional Supabase client and cloud state persistence
+- `artifacts/sellmate-ai/supabase/schema.sql` — optional Supabase table and row-level security policies
+- `artifacts/sellmate-ai/src/index.css` — shared Tailwind theme and visual tokens
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Demo mode is the default so the full MVP is usable without credentials or paid APIs.
+- Supabase is opt-in through Vite environment variables and uses per-user JSONB state with row-level security.
+- The assistant is intentionally local and catalog-grounded for the first MVP; it never calls a paid model.
+- Store data is seeded with a small Moroccan retail example so the dashboard is useful on first open.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Landing, sign-up, and login flows
+- Dashboard with revenue, orders, customers, products, and low-stock signals
+- Product CRUD with image URL support
+- Searchable customers and filterable orders
+- Local AI assistant for product, pricing, stock, delivery, and reply-writing prompts
+- Store settings for identity, currency, delivery, and assistant instructions
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- The first MVP should avoid paid APIs and remain useful in demo mode.
+- Moroccan Dirham (MAD) is the default currency.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Cloud mode requires both Supabase env values and the SQL in `artifacts/sellmate-ai/supabase/schema.sql`.
+- The product is currently delivered as the workspace's React/Vite web artifact so the managed preview and build pipeline work reliably.
 
 ## Pointers
 
